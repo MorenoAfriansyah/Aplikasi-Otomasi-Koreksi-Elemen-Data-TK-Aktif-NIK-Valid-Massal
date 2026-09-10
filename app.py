@@ -1,192 +1,145 @@
-import os
-import pandas as pd
 import streamlit as st
-import zipfile
+import pandas as pd
+import xlrd
 import io
 import warnings
 
+# Abaikan peringatan formatting
 warnings.filterwarnings('ignore', category=UserWarning)
 
-st.set_page_config(
-    page_title="Koreksi Data TK BPJS Ketenagakerjaan",
-    page_icon="🛡️",
-    layout="wide"
-)
+st.title("Koreksi Data TK Aktif BPJS Ketenagakerjaan")
 
-st.title("🛡️ Aplikasi Koreksi Data TK Aktif BPJS Ketenagakerjaan")
-st.markdown("Otomatisasi *VLOOKUP* elemen data peserta, penyesuaian lokasi pekerjaan, status PKWT, lengkap dengan fitur *Preview Before-After* dan unduh ZIP.")
+# 1. Upload File Referensi & Input File
+ref_file = st.file_uploader("Upload File Referensi (Format .xlsx)", type=['xlsx'])
+input_files = st.file_uploader("Upload File SMILE (Format .xls / .xlsx)", type=['xls', 'xlsx'], accept_multiple_files=True)
 
-# Setup Direktori Sesi Web
-INPUT_DIR = "web_input"
-OUTPUT_DIR = "web_output"
-for d in [INPUT_DIR, OUTPUT_DIR]:
-    if not os.path.exists(d):
-        os.makedirs(d)
+if st.button("Mulai Pemrosesan Data"):
+    if not ref_file or not input_files:
+        st.warning("Pastikan file referensi dan minimal 1 file input telah diunggah.")
+        st.stop()
 
-# Sidebar Panduan
-with st.sidebar:
-    st.header("Panduan Penggunaan")
-    st.markdown("1. **Unggah Referensi**: Masukkan file pembanding (`Sheet2`).")
-    st.markdown("2. **Unggah Target**: Pilih banyak file template sekaligus (`.xls/.xlsx`).")
-    st.markdown("3. **Preview**: Cek tabel perbandingan perubahan data (*Before-After*).")
-    st.markdown("4. **Unduh**: Dapatkan seluruh hasil dalam satu klik format ZIP.")
+    # 2. Proses File Referensi
+    with st.spinner("Membaca data referensi..."):
+        try:
+            df_ref = pd.read_excel(ref_file, sheet_name='Sheet2', engine='openpyxl')
+            df_ref['KPJ'] = df_ref['KPJ'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+            df_ref = df_ref.drop_duplicates(subset=['KPJ'], keep='first')
+            ref_dict = df_ref.set_index('KPJ')[['NAMA_IBU_KANDUNG', 'HANDPHONE', 'EMAIL']].to_dict('index')
+            st.success(f"Berhasil memuat {len(ref_dict)} data KPJ referensi unik.")
+        except Exception as e:
+            st.error(f"Gagal membaca file referensi: {e}")
+            st.stop()
 
-col1, col2 = st.columns(2)
-
-with col1:
-    st.subheader("1. File Referensi VLOOKUP")
-    ref_file_uploaded = st.file_uploader("Unggah file referensi (.xlsx/.xls)", type=['xlsx', 'xls'], key="ref")
-
-ref_file_path = "TESTING TEMPLATE vlookup.xlsx" # Default lokal jika ada
-if ref_file_uploaded is not None:
-    ref_file_path = os.path.join(INPUT_DIR, ref_file_uploaded.name)
-    with open(ref_file_path, "wb") as f:
-        f.write(ref_file_uploaded.getbuffer())
-    st.sidebar.success(f"Referensi aktif: {ref_file_uploaded.name}")
-
-with col2:
-    st.subheader("2. File Template Target Koreksi")
-    uploaded_files = st.file_uploader(
-        "Pilih banyak file template sekaligus",
-        type=['xls', 'xlsx'],
-        accept_multiple_files=True,
-        key="targets"
-    )
-
-if st.button("🚀 Jalankan Proses Koreksi & Preview", type="primary"):
-    if not os.path.exists(ref_file_path):
-        st.error("Harap unggah atau sediakan file referensi terlebih dahulu!")
-    elif not uploaded_files:
-        st.error("Harap unggah minimal satu file template koreksi!")
-    else:
-        with st.spinner("Memproses data koreksi dan menyiapkan preview..."):
+    # 3. Proses File Input
+    for uploaded_file in input_files:
+        file_name = uploaded_file.name
+        file_bytes = uploaded_file.getvalue()
+        df_raw = None
+        
+        st.write(f"---")
+        st.write(f"**Memproses: {file_name}**")
+        
+        # Penanganan khusus ekstensi .xls via object Stream (BytesIO)
+        if file_name.endswith('.xls'):
             try:
-                # Baca referensi
-                df_ref = pd.read_excel(ref_file_path, sheet_name='Sheet2')
-                df_ref['KPJ'] = df_ref['KPJ'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
-                df_ref = df_ref.drop_duplicates(subset=['KPJ'], keep='first')
-                ref_dict = df_ref.set_index('KPJ')[['NAMA_IBU_KANDUNG', 'HANDPHONE', 'EMAIL']].to_dict('index')
-                
-                success_count = 0
-                log_results = []
-                preview_data_store = []
+                # Bypass xlrd corruption via memory stream
+                wb = xlrd.open_workbook(file_contents=file_bytes, ignore_workbook_corruption=True)
+                df_raw = pd.read_excel(wb, sheet_name='Koreksi Elemen TK', header=None, engine='xlrd')
+            except Exception:
+                # Fallback HTML parser via memory stream
+                try:
+                    dfs = pd.read_html(io.BytesIO(file_bytes), header=None)
+                    if dfs:
+                        df_raw = dfs[0]
+                except Exception:
+                    pass
+        
+        # Eksekusi standar file normal/xlsx
+        if df_raw is None:
+            for engine_choice in ['openpyxl', 'xlrd', None]:
+                try:
+                    df_raw = pd.read_excel(io.BytesIO(file_bytes), sheet_name='Koreksi Elemen TK', header=None, engine=engine_choice)
+                    break
+                except Exception:
+                    continue
+        
+        if df_raw is None:
+            st.error(f"Gagal membaca data dari {file_name}. File mungkin rusak.")
+            continue
 
-                for uploaded_file in uploaded_files:
-                    file_name = uploaded_file.name
-                    input_path = os.path.join(INPUT_DIR, file_name)
+        try:
+            # Pecah metadata dan header
+            metadata = df_raw.iloc[0:1].copy()   
+            headers = df_raw.iloc[1:2].copy()    
+            data = df_raw.iloc[2:].copy()        
+            
+            data.columns = headers.iloc[0].values
+            data['KPJ*'] = data['KPJ*'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+            
+            # Tentukan default lokasi terbanyak
+            valid_lokasi = data['Lokasi Pekerjaan'].dropna().astype(str).str.strip()
+            valid_lokasi = valid_lokasi[~valid_lokasi.isin(['', 'nan', 'None'])]
+            default_lokasi = valid_lokasi.mode().iloc[0] if not valid_lokasi.empty else '3515'
+            
+            counter_updated = 0
+            
+            # Iterasi Data
+            for idx, row in data.iterrows():
+                kpj = row['KPJ*']
+                
+                # Rule 1: Lokasi
+                lokasi = row.get('Lokasi Pekerjaan', None)
+                if pd.isna(lokasi) or str(lokasi).strip() in ['', 'nan', 'None']:
+                    data.at[idx, 'Lokasi Pekerjaan'] = default_lokasi
+                
+                # Rule 2: PKWT
+                pkwt = str(row.get('PKWT', '')).strip().upper()
+                if pkwt == 'Y':
+                    data.at[idx, 'Tanggal Akhir Kontrak'] = '31-12-2026'
+                elif pkwt == 'T':
+                    data.at[idx, 'Tanggal Akhir Kontrak'] = ''
+
+                # Rule 3: VLOOKUP
+                if kpj in ref_dict:
+                    counter_updated += 1
                     
-                    with open(input_path, "wb") as f:
-                        f.write(uploaded_file.getbuffer())
+                    ibu = ref_dict[kpj]['NAMA_IBU_KANDUNG']
+                    if pd.notna(ibu):
+                        data.at[idx, 'Nama Ibu Kandung'] = str(ibu).strip()
                         
-                    base_name = os.path.splitext(file_name)[0]
-                    output_file_name = base_name + '.xlsx'
-                    output_path = os.path.join(OUTPUT_DIR, output_file_name)
-                    
-                    # Baca file input
-                    df_raw = None
-                    for engine_choice in [None, 'openpyxl', 'xlrd']:
-                        try:
-                            df_raw = pd.read_excel(input_path, sheet_name='Koreksi Elemen TK', header=None, engine=engine_choice)
-                            break
-                        except:
-                            pass
-                            
-                    if df_raw is not None:
-                        metadata = df_raw.iloc[0:1].copy()
-                        headers = df_raw.iloc[1:2].copy()
-                        data_original = df_raw.iloc[2:].copy()
+                    hp = ref_dict[kpj]['HANDPHONE']
+                    if pd.notna(hp):
+                        hp_str = str(hp).replace('.0', '').strip()
+                        if hp_str:
+                            data.at[idx, 'Handphone'] = hp_str + '\t'
                         
-                        data_original.columns = headers.iloc[0].values
-                        
-                        # Buat salinan untuk data setelah dikoreksi (untuk perbandingan preview)
-                        data_modified = data_original.copy()
-                        data_modified['KPJ*'] = data_modified['KPJ*'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
-                        
-                        updated_rows = 0
-                        for idx, row in data_modified.iterrows():
-                            kpj = row['KPJ*']
-                            
-                            # Rule 1: Lokasi Pekerjaan
-                            lokasi = row['Lokasi Pekerjaan']
-                            if pd.isna(lokasi) or str(lokasi).strip() in ['', 'nan', 'None']:
-                                data_modified.at[idx, 'Lokasi Pekerjaan'] = '3515'
-                                
-                            # Rule 2: PKWT Kontrak
-                            pkwt = str(row['PKWT']).strip().upper()
-                            if pkwt == 'Y':
-                                data_modified.at[idx, 'Tanggal Akhir Kontrak'] = '31-12-2026'
-                            elif pkwt == 'T':
-                                data_modified.at[idx, 'Tanggal Akhir Kontrak'] = ''
-                                
-                            # Rule 3: VLOOKUP
-                            if kpj in ref_dict:
-                                updated_rows += 1
-                                ibu = ref_dict[kpj]['NAMA_IBU_KANDUNG']
-                                if pd.notna(ibu):
-                                    data_modified.at[idx, 'Nama Ibu Kandung'] = str(ibu).strip()
-                                hp = ref_dict[kpj]['HANDPHONE']
-                                if pd.notna(hp):
-                                    hp_str = str(hp).replace('.0', '').strip()
-                                    if hp_str:
-                                        data_modified.at[idx, 'Handphone'] = hp_str + '\t'
-                                email = ref_dict[kpj]['EMAIL']
-                                if pd.notna(email):
-                                    data_modified.at[idx, 'Email'] = str(email).strip()
-                                    
-                        # Simpan hasil akhir ke file fisik
-                        metadata.columns = range(len(metadata.columns))
-                        headers.columns = range(len(headers.columns))
-                        data_modified.columns = range(len(data_modified.columns))
-                        
-                        final_df = pd.concat([metadata, headers, data_modified], ignore_index=True)
-                        final_df.to_excel(output_path, index=False, header=False, sheet_name='Koreksi Elemen TK', engine='openpyxl')
-                        
-                        success_count += 1
-                        log_results.append({"File Asal": file_name, "Status": "Berhasil", "Baris Terkoreksi": updated_rows, "File Output": output_file_name})
-                        
-                        # Simpan ringkasan untuk Preview Before-After (Kolom penting saja)
-                        cols_to_show = ['KPJ*', 'Nama Lengkap', 'Nama Ibu Kandung', 'Handphone', 'Email', 'Lokasi Pekerjaan', 'Tanggal Akhir Kontrak']
-                        preview_data_store.append({
-                            "file": file_name,
-                            "before": data_original[[c for c in cols_to_show if c in data_original.columns]],
-                            "after": data_modified[[c for c in cols_to_show if c in data_modified.columns]]
-                        })
-                    else:
-                        log_results.append({"File Asal": file_name, "Status": "Gagal Dibaca", "Baris Terkoreksi": 0, "File Output": "-"})
+                    email = ref_dict[kpj]['EMAIL']
+                    if pd.notna(email):
+                        data.at[idx, 'Email'] = str(email).strip()
 
-                st.success(f"Berhasil memproses {success_count} dari {len(uploaded_files)} file!")
-                
-                # --- TAMPILAN PREVIEW BEFORE - AFTER ---
-                st.markdown("---")
-                st.subheader("🔍 Pengecekan Preview (Before vs After Koreksi)")
-                
-                for store in preview_data_store:
-                    with st.expander(f"📁 Detail File: {store['file']}"):
-                        tab_before, tab_after = st.tabs(["❌ Data Sebelum (Before)", "✅ Data Sesudah (After VLOOKUP)"])
-                        with tab_before:
-                            st.dataframe(store['before'], use_container_width=True)
-                        with tab_after:
-                            st.dataframe(store['after'], use_container_width=True)
-
-                # --- BUAT FILE ZIP OTOMATIS ---
-                zip_buffer = io.BytesIO()
-                with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
-                    for res in log_results:
-                        if res["Status"] == "Berhasil":
-                            out_p = os.path.join(OUTPUT_DIR, res["File Output"])
-                            zip_file.write(out_p, arcname=res["File Output"])
-                zip_buffer.seek(0)
-
-                # --- TOMBOL DOWNLOAD ZIP ---
-                st.markdown("---")
-                st.subheader("📦 Unduh Seluruh Hasil (Format Folder ZIP)")
-                st.download_button(
-                    label="📥 Unduh Semua File Hasil (ZIP)",
-                    data=zip_buffer,
-                    file_name="Hasil_Koreksi_TK_BPJS.zip",
-                    mime="application/zip",
-                    type="primary"
-                )
-
-            except Exception as e:
-                st.error(f"Terjadi kesalahan sistem saat memproses: {e}")
+            # Gabungkan dan jadikan format BytesIO untuk diunduh
+            metadata.columns = range(len(metadata.columns))
+            headers.columns = range(len(headers.columns))
+            data.columns = range(len(data.columns))
+            
+            final_df = pd.concat([metadata, headers, data], ignore_index=True)
+            
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                final_df.to_excel(writer, index=False, header=False, sheet_name='Koreksi Elemen TK')
+            
+            output.seek(0)
+            
+            st.info(f"Koreksi berhasil: {counter_updated} baris diupdate (Default Lokasi: {default_lokasi}).")
+            
+            # Tombol Download per file
+            output_filename = file_name.rsplit('.', 1)[0] + ".xlsx"
+            st.download_button(
+                label=f"📥 Download {output_filename}",
+                data=output,
+                file_name=output_filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            
+        except Exception as e:
+            st.error(f"Terjadi kesalahan saat memproses isi {file_name}: {e}")
