@@ -11,7 +11,7 @@ warnings.filterwarnings('ignore', category=UserWarning)
 
 # --- UI STREAMLIT ---
 st.set_page_config(page_title="Koreksi Data TK BPJS", layout="wide")
-st.title("Program Koreksi Data TK Aktif BPJS")
+st.title("APLIKASI OTOMASI KOREKSI ELEMEN DATA TK AKTIF NIK VALID MASSAL")
 
 ref_file = st.file_uploader("1. Upload File Referensi (.xlsx)", type=['xlsx'])
 input_files = st.file_uploader("2. Upload File Input (.xls / .xlsx)", type=['xls', 'xlsx'], accept_multiple_files=True)
