@@ -46,13 +46,6 @@ st.markdown("""
         margin-bottom: 20px;
         border-left: 5px solid #2563eb;
     }
-    .metric-card {
-        background: #eff6ff;
-        padding: 15px;
-        border-radius: 10px;
-        text-align: center;
-        border: 1px solid #bfdbfe;
-    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -71,10 +64,10 @@ with st.sidebar:
     input_files = st.file_uploader("2. Berkas Input (.xls / .xlsx)", type=['xls', 'xlsx'], accept_multiple_files=True)
     
     st.markdown("---")
-    st.markdown("### 📌 Petunjuk Singkat:")
-    st.markdown("• Pastikan Sheet referensi bernama **Sheet2**.")
-    st.markdown("• Kolom **KPJ** menjadi acuan VLOOKUP exact match index 9, 10, 11.")
-    st.markdown("• Format output akan dikompilasi otomatis ke dalam format arsip **ZIP**.")
+    st.markdown("### 📌 Aturan Validasi Ketat:")
+    st.markdown("• Sheet referensi bernama **Sheet2**.")
+    st.markdown("• **Nama Ibu Kandung** wajib ada/valid. Jika kosong, baris diabaikan.")
+    st.markdown("• Jika HP/Email kosong tetapi Nama Ibu ada, maka Nama Ibu tetap diisi.")
 
 # Main Interface Area
 col1, col2 = st.columns([1, 1], gap="medium")
@@ -96,7 +89,7 @@ with col1:
 
 with col2:
     st.markdown("### ⚙️ Panel Kontrol Eksekusi")
-    st.markdown("Klik tombol di bawah untuk menjalankan mesin transformasi data dan validasi otomatis.")
+    st.markdown("Klik tombol di bawah untuk menjalankan mesin transformasi data dan validasi ketat.")
     
     process_btn = st.button("🚀 Proses Koreksi Data Sekarang")
 
@@ -107,14 +100,13 @@ if process_btn:
     elif not input_files:
         st.error("❌ Silakan unggah minimal 1 file input untuk dikoreksi.")
     else:
-        with st.spinner("🔄 Sedang memproses logika VLOOKUP, normalisasi, dan pembersihan data..."):
+        with st.spinner("🔄 Sedang memproses logika VLOOKUP, validasi ketat, dan normalisasi data..."):
             with tempfile.TemporaryDirectory() as temp_dir:
                 input_dir = os.path.join(temp_dir, 'input')
                 output_dir = os.path.join(temp_dir, 'output')
                 os.makedirs(input_dir)
                 os.makedirs(output_dir)
 
-                # Simpan file referensi ke direktori sementara
                 ref_path = os.path.join(temp_dir, ref_file.name)
                 with open(ref_path, "wb") as f:
                     f.write(ref_file.getbuffer())
@@ -125,7 +117,6 @@ if process_btn:
                         f.write(uploaded_file.getbuffer())
 
                 try:
-                    # 1. Baca File Referensi (Sheet 2)
                     df_ref = pd.read_excel(ref_path, sheet_name='Sheet2', engine='openpyxl')
                     df_ref.columns = df_ref.columns.str.strip()
                     
@@ -168,7 +159,6 @@ if process_btn:
                         if df_raw is None:
                             continue
 
-                        # Tangkap sampel data sebelum dikoreksi untuk perbandingan (Before)
                         raw_data_clone = df_raw.iloc[2:].copy()
                         raw_headers = df_raw.iloc[1:2].copy()
                         raw_data_clone.columns = raw_headers.iloc[0].values
@@ -180,7 +170,6 @@ if process_btn:
                         data.columns = headers.iloc[0].values
                         data['KPJ*'] = data['KPJ*'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
                         
-                        # Atur Default Lokasi Pekerjaan
                         valid_lokasi = data['Lokasi Pekerjaan'].dropna().astype(str).str.strip()
                         valid_lokasi = valid_lokasi[~valid_lokasi.isin(['', 'nan', 'None'])]
                         default_lokasi = valid_lokasi.mode().iloc[0] if not valid_lokasi.empty else '3515'
@@ -198,29 +187,39 @@ if process_btn:
                             elif pkwt == 'T': 
                                 data.at[idx, 'Tanggal Akhir Kontrak'] = ''
 
+                            # Logika VLOOKUP Ketat Berdasarkan Nama Ibu Kandung
                             if kpj in ref_dict:
                                 ibu = ref_dict[kpj][col_ibu]
-                                if pd.notna(ibu) and str(ibu).strip() != '':
+                                hp = ref_dict[kpj][col_hp]
+                                email = ref_dict[kpj][col_email]
+                                
+                                is_ibu_valid = pd.notna(ibu) and str(ibu).strip() != '' and str(ibu).strip().lower() != 'nan'
+                                
+                                if is_ibu_valid:
+                                    # Update Nama Ibu Kandung (Wajib)
                                     data.at[idx, 'Nama Ibu Kandung'] = str(ibu).strip()
                                     
-                                hp = ref_dict[kpj][col_hp]
-                                if pd.notna(hp):
-                                    hp_str = str(hp).replace('.0', '').strip()
-                                    if hp_str and hp_str.lower() != 'nan':
-                                        data.at[idx, 'Handphone'] = hp_str  # Pure string tanpa \t
-                                    
-                                email = ref_dict[kpj][col_email]
-                                if pd.notna(email) and str(email).strip() != '':
-                                    data.at[idx, 'Email'] = str(email).strip()
+                                    # Update HP jika valid
+                                    if pd.notna(hp):
+                                        hp_str = str(hp).replace('.0', '').strip()
+                                        if hp_str and hp_str.lower() != 'nan':
+                                            data.at[idx, 'Handphone'] = hp_str
+                                            
+                                    # Update Email jika valid
+                                    if pd.notna(email):
+                                        email_str = str(email).strip()
+                                        if email_str and email_str.lower() != 'nan':
+                                            data.at[idx, 'Email'] = email_str
+                                else:
+                                    # Jika Nama Ibu Kandung kosong/invalid, data vlookup tidak diterapkan
+                                    pass
 
-                        # Simpan hasil olahan untuk preview
                         preview_data_store.append({
                             "filename": file_name,
                             "before": raw_data_clone,
                             "after": data.copy()
                         })
 
-                        # Reassembly & Simpan
                         metadata.columns = range(len(metadata.columns))
                         headers.columns = range(len(headers.columns))
                         data.columns = range(len(data.columns))
@@ -233,7 +232,6 @@ if process_btn:
                     st.error(f"❌ Terjadi kesalahan sistem saat pemrosesan: {e}")
                     processed_count = 0
 
-                # --- PACKAGING ZIP OUTPUT ---
                 if processed_count > 0:
                     zip_buffer = BytesIO()
                     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
@@ -243,18 +241,16 @@ if process_btn:
                                 zip_file.write(file_path, arcname=file)
                     
                     st.markdown("---")
-                    st.success(f"🎉 Berhasil memproses **{processed_count}** berkas input dengan sukses!")
+                    st.success(f"🎉 Berhasil memproses **{processed_count}** berkas input dengan validasi ketat!")
                     
-                    # --- TAMPILAN DISPLAY BEFORE - AFTER ---
                     st.markdown("## 📊 Pratinjau Koreksi Data (Before vs After)")
-                    st.markdown("Perbandingan langsung elemen data yang diperbarui melalui mesin pencari VLOOKUP otomatis:")
+                    st.markdown("Perbandingan langsung elemen data berdasarkan aturan validasi Nama Ibu Kandung:")
                     
                     for item in preview_data_store:
                         with st.expander(f"📁 Detail Berkas: {item['filename']}", expanded=True):
                             col_b, col_a = st.columns(2)
                             cols_to_show = ['KPJ*', 'Nama Lengkap', 'Lokasi Pekerjaan', 'PKWT', 'Tanggal Akhir Kontrak', 'Nama Ibu Kandung', 'Handphone', 'Email']
                             
-                            # Ambil kolom yang tersedia saja
                             available_cols_b = [c for c in cols_to_show if c in item['before'].columns]
                             available_cols_a = [c for c in cols_to_show if c in item['after'].columns]
                             
@@ -263,7 +259,7 @@ if process_btn:
                                 st.dataframe(item['before'][available_cols_b].head(10), use_container_width=True)
                                 
                             with col_a:
-                                st.markdown("🟢 **SESUDAH (Hasil Koreksi Otomatis)**")
+                                st.markdown("🟢 **SESUDAH (Hasil Koreksi Validasi)**")
                                 st.dataframe(item['after'][available_cols_a].head(10), use_container_width=True)
 
                     st.markdown("---")
