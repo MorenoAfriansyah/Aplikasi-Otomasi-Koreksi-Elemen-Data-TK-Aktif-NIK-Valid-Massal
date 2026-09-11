@@ -66,8 +66,8 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 📌 Aturan Validasi Ketat:")
     st.markdown("• Sheet referensi bernama **Sheet2**.")
-    st.markdown("• **Nama Ibu Kandung** wajib ada/valid. Jika kosong, baris diabaikan.")
-    st.markdown("• Jika HP/Email kosong tetapi Nama Ibu ada, maka Nama Ibu tetap diisi.")
+    st.markdown("• **Nama Ibu Kandung Wajib Ada**. Jika tidak ada, baris data tersebut **dihapus/tidak ditampilkan**[cite: 5].")
+    st.markdown("• Jika HP atau Email tidak ada di referensi, kolom tersebut dikosongkan.")
 
 # Main Interface Area
 col1, col2 = st.columns([1, 1], gap="medium")
@@ -89,7 +89,7 @@ with col1:
 
 with col2:
     st.markdown("### ⚙️ Panel Kontrol Eksekusi")
-    st.markdown("Klik tombol di bawah untuk menjalankan mesin transformasi data dan validasi ketat.")
+    st.markdown("Klik tombol di bawah untuk menjalankan mesin transformasi data dan penyaringan ketat.")
     
     process_btn = st.button("🚀 Proses Koreksi Data Sekarang")
 
@@ -100,7 +100,7 @@ if process_btn:
     elif not input_files:
         st.error("❌ Silakan unggah minimal 1 file input untuk dikoreksi.")
     else:
-        with st.spinner("🔄 Sedang memproses logika VLOOKUP, validasi ketat, dan normalisasi data..."):
+        with st.spinner("🔄 Sedang memproses VLOOKUP, penyaringan baris invalid, dan normalisasi..."):
             with tempfile.TemporaryDirectory() as temp_dir:
                 input_dir = os.path.join(temp_dir, 'input')
                 output_dir = os.path.join(temp_dir, 'output')
@@ -174,57 +174,74 @@ if process_btn:
                         valid_lokasi = valid_lokasi[~valid_lokasi.isin(['', 'nan', 'None'])]
                         default_lokasi = valid_lokasi.mode().iloc[0] if not valid_lokasi.empty else '3515'
                         
+                        valid_rows = []
                         for idx, row in data.iterrows():
                             kpj = row['KPJ*']
                             
+                            if kpj not in ref_dict:
+                                continue
+                                
+                            ibu = ref_dict[kpj][col_ibu]
+                            hp = ref_dict[kpj][col_hp]
+                            email = ref_dict[kpj][col_email]
+                            
+                            is_ibu_valid = pd.notna(ibu) and str(ibu).strip() != '' and str(ibu).strip().lower() != 'nan'
+                            
+                            if not is_ibu_valid:
+                                # Jika Nama Ibu Kandung tidak valid/kosong, baris di-drop total
+                                continue
+                                
                             lokasi = row.get('Lokasi Pekerjaan', None)
                             if pd.isna(lokasi) or str(lokasi).strip() in ['', 'nan', 'None']:
-                                data.at[idx, 'Lokasi Pekerjaan'] = default_lokasi
+                                row['Lokasi Pekerjaan'] = default_lokasi
                             
                             pkwt = str(row.get('PKWT', '')).strip().upper()
                             if pkwt == 'Y': 
-                                data.at[idx, 'Tanggal Akhir Kontrak'] = '31-12-2026'
+                                row['Tanggal Akhir Kontrak'] = '31-12-2026'
                             elif pkwt == 'T': 
-                                data.at[idx, 'Tanggal Akhir Kontrak'] = ''
+                                row['Tanggal Akhir Kontrak'] = ''
 
-                            # Logika VLOOKUP Ketat Berdasarkan Nama Ibu Kandung
-                            if kpj in ref_dict:
-                                ibu = ref_dict[kpj][col_ibu]
-                                hp = ref_dict[kpj][col_hp]
-                                email = ref_dict[kpj][col_email]
-                                
-                                is_ibu_valid = pd.notna(ibu) and str(ibu).strip() != '' and str(ibu).strip().lower() != 'nan'
-                                
-                                if is_ibu_valid:
-                                    # Update Nama Ibu Kandung (Wajib)
-                                    data.at[idx, 'Nama Ibu Kandung'] = str(ibu).strip()
-                                    
-                                    # Update HP jika valid
-                                    if pd.notna(hp):
-                                        hp_str = str(hp).replace('.0', '').strip()
-                                        if hp_str and hp_str.lower() != 'nan':
-                                            data.at[idx, 'Handphone'] = hp_str
-                                            
-                                    # Update Email jika valid
-                                    if pd.notna(email):
-                                        email_str = str(email).strip()
-                                        if email_str and email_str.lower() != 'nan':
-                                            data.at[idx, 'Email'] = email_str
+                            # Update Nama Ibu Kandung (Wajib)
+                            row['Nama Ibu Kandung'] = str(ibu).strip()
+                            
+                            # Update HP atau kosongkan jika tidak ada
+                            if pd.notna(hp):
+                                hp_str = str(hp).replace('.0', '').strip()
+                                if hp_str and hp_str.lower() != 'nan':
+                                    row['Handphone'] = hp_str
                                 else:
-                                    # Jika Nama Ibu Kandung kosong/invalid, data vlookup tidak diterapkan
-                                    pass
+                                    row['Handphone'] = ''
+                            else:
+                                row['Handphone'] = ''
+                                
+                            # Update Email atau kosongkan jika tidak ada
+                            if pd.notna(email):
+                                email_str = str(email).strip()
+                                if email_str and email_str.lower() != 'nan':
+                                    row['Email'] = email_str
+                                else:
+                                    row['Email'] = ''
+                            else:
+                                row['Email'] = ''
+                                
+                            valid_rows.append(row)
+
+                        if valid_rows:
+                            data_filtered = pd.DataFrame(valid_rows)
+                        else:
+                            data_filtered = pd.DataFrame(columns=data.columns)
 
                         preview_data_store.append({
                             "filename": file_name,
                             "before": raw_data_clone,
-                            "after": data.copy()
+                            "after": data_filtered.copy()
                         })
 
                         metadata.columns = range(len(metadata.columns))
                         headers.columns = range(len(headers.columns))
-                        data.columns = range(len(data.columns))
+                        data_filtered.columns = range(len(data_filtered.columns))
                         
-                        final_df = pd.concat([metadata, headers, data], ignore_index=True)
+                        final_df = pd.concat([metadata, headers, data_filtered], ignore_index=True)
                         final_df.to_excel(output_path, index=False, header=False, sheet_name='Koreksi Elemen TK', engine='openpyxl')
                         processed_count += 1
                         
@@ -241,10 +258,10 @@ if process_btn:
                                 zip_file.write(file_path, arcname=file)
                     
                     st.markdown("---")
-                    st.success(f"🎉 Berhasil memproses **{processed_count}** berkas input dengan validasi ketat!")
+                    st.success(f"🎉 Berhasil memproses **{processed_count}** berkas dengan penyaringan baris invalid!")
                     
                     st.markdown("## 📊 Pratinjau Koreksi Data (Before vs After)")
-                    st.markdown("Perbandingan langsung elemen data berdasarkan aturan validasi Nama Ibu Kandung:")
+                    st.markdown("Perbandingan langsung setelah baris tanpa Nama Ibu Kandung dihapus dan kolom kosong dinormalisasi:")
                     
                     for item in preview_data_store:
                         with st.expander(f"📁 Detail Berkas: {item['filename']}", expanded=True):
@@ -259,7 +276,7 @@ if process_btn:
                                 st.dataframe(item['before'][available_cols_b].head(10), use_container_width=True)
                                 
                             with col_a:
-                                st.markdown("🟢 **SESUDAH (Hasil Koreksi Validasi)**")
+                                st.markdown("🟢 **SESUDAH (Hasil Koreksi & Penyaringan)**")
                                 st.dataframe(item['after'][available_cols_a].head(10), use_container_width=True)
 
                     st.markdown("---")
