@@ -34,17 +34,14 @@ def process_koreksi_data():
         return
 
     # --- LOGIKA VLOOKUP INDEX 9, 10, 11 ---
-    # Bersihkan spasi tersembunyi pada nama kolom agar pencarian nama header aman
     df_ref.columns = df_ref.columns.str.strip()
 
-    # Cari posisi kolom 'KPJ'
     try:
         kpj_idx = df_ref.columns.get_loc('KPJ')
     except KeyError:
         print("[ERROR] Kolom 'KPJ' tidak ditemukan di Sheet2. Pastikan penulisan header benar.")
         return
 
-    # Tentukan target kolom berdasarkan perhitungan index
     try:
         col_ibu = df_ref.columns[kpj_idx + 8]
         col_hp = df_ref.columns[kpj_idx + 9]
@@ -62,7 +59,6 @@ def process_koreksi_data():
     df_ref['KPJ'] = df_ref['KPJ'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
     df_ref = df_ref.drop_duplicates(subset=['KPJ'], keep='first')
     
-    # Buat dictionary sebagai Mesin Pencari VLOOKUP
     ref_dict = df_ref.set_index('KPJ')[[col_ibu, col_hp, col_email]].to_dict('index')
     print(f"[INFO] {len(ref_dict)} data referensi KPJ unik berhasil dimuat dan siap dicocokkan.")
     
@@ -81,7 +77,6 @@ def process_koreksi_data():
         print(f"\n[PROSES] Menganalisis file input: {file_name}...")
         df_raw = None
         
-        # Penanganan format .xls bawaan sistem
         if file_name.endswith('.xls'):
             try:
                 wb = xlrd.open_workbook(file_path, ignore_workbook_corruption=True)
@@ -94,7 +89,6 @@ def process_koreksi_data():
                 except Exception:
                     pass
         
-        # Fallback jika gagal dengan xlrd / html
         if df_raw is None:
             for engine_choice in ['openpyxl', 'xlrd', None]:
                 try:
@@ -108,15 +102,11 @@ def process_koreksi_data():
             continue
 
         try:
-            # Memisahkan metadata, header, dan data asli
             metadata = df_raw.iloc[0:1].copy()   
             headers = df_raw.iloc[1:2].copy()    
             data = df_raw.iloc[2:].copy()        
             
-            # Set kolom dengan header asli
             data.columns = headers.iloc[0].values
-            
-            # Membersihkan KPJ di file input
             data['KPJ*'] = data['KPJ*'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
             
             # --- PENENTUAN DEFAULT LOKASI PEKERJAAN ---
@@ -147,36 +137,40 @@ def process_koreksi_data():
                 elif pkwt == 'T':
                     data.at[idx, 'Tanggal Akhir Kontrak'] = ''
 
-                # 3. Eksekusi VLOOKUP berdasarkan Ref Dict
+                # 3. Eksekusi VLOOKUP dengan Validasi Ketat Nama Ibu Kandung
                 if kpj in ref_dict:
-                    counter_updated += 1
-                    
-                    # Isi Nama Ibu (dengan validasi anti 'nan')
                     ibu = ref_dict[kpj][col_ibu]
-                    if pd.notna(ibu) and str(ibu).strip() != '':
+                    hp = ref_dict[kpj][col_hp]
+                    email = ref_dict[kpj][col_email]
+                    
+                    # Validasi ketat: Nama Ibu Kandung WAJIB valid
+                    is_ibu_valid = pd.notna(ibu) and str(ibu).strip() != '' and str(ibu).strip().lower() != 'nan'
+                    
+                    if is_ibu_valid:
+                        counter_updated += 1
+                        # Isi Nama Ibu Kandung
                         data.at[idx, 'Nama Ibu Kandung'] = str(ibu).strip()
                         
-                    # Isi No Handphone (Murni teks angka tanpa \t)
-                    hp = ref_dict[kpj][col_hp]
-                    if pd.notna(hp):
-                        hp_str = str(hp).replace('.0', '').strip()
-                        if hp_str and hp_str.lower() != 'nan':
-                            data.at[idx, 'Handphone'] = hp_str
-                        
-                    # Isi Email
-                    email = ref_dict[kpj][col_email]
-                    if pd.notna(email) and str(email).strip() != '':
-                        data.at[idx, 'Email'] = str(email).strip()
+                        # Isi No Handphone jika valid
+                        if pd.notna(hp):
+                            hp_str = str(hp).replace('.0', '').strip()
+                            if hp_str and hp_str.lower() != 'nan':
+                                data.at[idx, 'Handphone'] = hp_str
+                                
+                        # Isi Email jika valid
+                        if pd.notna(email):
+                            email_str = str(email).strip()
+                            if email_str and email_str.lower() != 'nan':
+                                data.at[idx, 'Email'] = email_str
+                    else:
+                        # Jika Nama Ibu Kandung tidak ada/invalid, abaikan baris ini (tidak dikoreksi vlookup)
+                        pass
 
-            # Kembalikan struktur kolom menjadi angka agar bisa disatukan kembali
             metadata.columns = range(len(metadata.columns))
             headers.columns = range(len(headers.columns))
             data.columns = range(len(data.columns))
             
-            # Gabungkan metadata, header, dan data yang sudah dikoreksi
             final_df = pd.concat([metadata, headers, data], ignore_index=True)
-            
-            # Simpan file ke folder output
             final_df.to_excel(output_path, index=False, header=False, sheet_name='Koreksi Elemen TK', engine='openpyxl')
             
             print(f"[SUKSES] VLOOKUP berhasil menemukan dan mengubah {counter_updated} baris.")
